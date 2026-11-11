@@ -1,12 +1,15 @@
 import { mount } from 'svelte';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App.svelte';
+import { initializeSession } from './lib/stores/tactics';
 import '@fontsource-variable/inter';
 import '@fontsource/fira-code/400.css';
 import './app.css';
 
-const app = mount(App, { target: document.getElementById('app')! });
+async function bootstrap() {
+  await initializeSession();
+  mount(App, { target: document.getElementById('app')! });
+  registerSW({ immediate: true });
+}
 
-registerSW({ immediate: true });
-
-export default app;
+void bootstrap();

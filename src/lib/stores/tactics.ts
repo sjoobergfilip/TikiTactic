@@ -1,34 +1,15 @@
 import { get, writable } from 'svelte/store';
 import { createInitialSession, createSlide } from '../data';
+import { sessionRepository } from '../persistence';
 import type { Category, Slide, TacticsSession, Team, Tool } from '../types';
 
-const STORAGE_KEY = 'touchline-tactics-v1';
 const HISTORY_LIMIT = 40;
 
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function loadSession(): TacticsSession {
-  if (typeof window === 'undefined') return createInitialSession();
-  try {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (!stored) return createInitialSession();
-    const parsed = JSON.parse(stored) as TacticsSession;
-    if (parsed.version !== 1 || !Array.isArray(parsed.slides) || parsed.slides.length === 0) {
-      return createInitialSession();
-    }
-    return {
-      ...parsed,
-      smoothTransitions: parsed.smoothTransitions ?? true,
-      showCorridors: parsed.showCorridors ?? false,
-    };
-  } catch {
-    return createInitialSession();
-  }
-}
-
-export const session = writable<TacticsSession>(loadSession());
+export const session = writable<TacticsSession>(createInitialSession());
 export const currentSlideId = writable<string>(get(session).slides[0].id);
 export const activeTool = writable<Tool>('select');
 export const selectedPlayerId = writable<string | null>(null);
@@ -40,6 +21,7 @@ export const future = writable<TacticsSession[]>([]);
 
 let noticeTimer: ReturnType<typeof setTimeout>;
 let saveTimer: ReturnType<typeof setTimeout>;
+let persistenceReady = false;
 
 export function flash(message: string) {
   notice.set(message);
@@ -47,21 +29,41 @@ export function flash(message: string) {
   noticeTimer = setTimeout(() => notice.set(''), 2400);
 }
 
-if (typeof window !== 'undefined') {
-  session.subscribe((value) => {
-    saveStatus.set('saving');
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      try {
-        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
+function scheduleSave(value: TacticsSession) {
+  saveStatus.set('saving');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    void sessionRepository
+      .save(value)
+      .then(() => saveStatus.set('saved'))
+      .catch(() => {
         saveStatus.set('saved');
-      } catch {
-        saveStatus.set('saved');
-        flash('Browser storage is full. Export a backup to keep this plan.');
-      }
-    }, 350);
-  });
+        flash('Local storage is unavailable or full. Export a backup to keep this plan.');
+      });
+  }, 350);
 }
+
+export async function initializeSession() {
+  let shouldSave = true;
+  try {
+    const summaries = await sessionRepository.listSummaries();
+    const latest = summaries[0];
+    if (latest) {
+      const stored = await sessionRepository.load(latest.id);
+      session.set(stored);
+      currentSlideId.set(stored.slides[0].id);
+    }
+  } catch {
+    shouldSave = false;
+    flash('Stored sessions could not be loaded. The example plan has not been saved over them.');
+  }
+  persistenceReady = true;
+  if (shouldSave) scheduleSave(get(session));
+}
+
+session.subscribe((value) => {
+  if (persistenceReady) scheduleSave(value);
+});
 
 export function checkpoint() {
   const snapshot = clone(get(session));
